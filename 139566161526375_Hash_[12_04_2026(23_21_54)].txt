@@ -1,3 +1,4 @@
+-- bridge duels (12_04_2026)
 return {
     ["ReplicatedStorage.Modules.ECS.jabby.jabby.server.query_parser"] = "43d5677fb29fb69a62b755095a96a8dd2f3b6af9c3198fdba5f6c6bade733b02f51e099be00295ab63e73d2c09f4c1af",
     ["ReplicatedStorage.Services.MapService"] = "9bf92070a20c549bac978a3bc60d90bec90758500d6789e854c13744d494a406c38eb8b83cb588201576a41121a0e9f2",
