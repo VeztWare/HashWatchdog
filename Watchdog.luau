@@ -17,6 +17,10 @@ local Watchdog = {
     EndingExclusions = {
         Animate = true,
     },
+    WildcardTokens = {
+        { token = "[WTD_WILDCARD_NAME]",        getValue = function() return game:GetService("Players").LocalPlayer.Name end },
+        { token = "[WTD_WILDCARD_DISPLAYNAME]", getValue = function() return game:GetService("Players").LocalPlayer.DisplayName end },
+    },
     Beautifier = loadstring(game:HttpGet("https://raw.githubusercontent.com/chadhyatt/LuaEncode/refs/heads/master/src/LuaEncode.lua"))()
 }
 
@@ -24,9 +28,36 @@ if not isfolder("Watchdog_Saves") then
     makefolder("Watchdog_Saves")
 end
 
+function Watchdog:NormalizePath(fullName)
+    local segments = {}
+    for seg in string.gmatch(fullName, "[^%.]+") do
+        table.insert(segments, seg)
+    end
+
+    for i, seg in ipairs(segments) do
+        for _, rule in ipairs(self.WildcardTokens) do
+            if seg == rule.getValue() then
+                segments[i] = rule.token
+                break
+            end
+        end
+    end
+
+    return table.concat(segments, ".")
+end
+
+function Watchdog:DenormalizePath(normalizedName)
+    local result = normalizedName
+    for _, rule in ipairs(self.WildcardTokens) do
+        local escapedToken = rule.token:gsub("[%[%]]", "%%%1")
+        result = result:gsub(escapedToken, rule.getValue())
+    end
+    return result
+end
+
+
 function Watchdog:Sanitize(module)
     local fullName = module:GetFullName()
-
     local root = string.match(fullName, "^[^%.]+")
 
     if self.StartingExclusions[root] then
@@ -47,22 +78,35 @@ function Watchdog:SanitizeName(str)
     str = str:gsub("[%.%/%\\%:%*%?%\"%<%>%|]", "_")
     str = str:gsub("%s+", "_")
     str = str:gsub("[^%w_]", "")
-
     return str
+end
+
+function Watchdog:CheckValidBytecode(module)
+    local suc, bytecode = pcall(function()
+        return getscriptbytecode(module)
+    end)
+    if bytecode == nil then
+        return ""
+    end
+    if bytecode ~= nil and #bytecode <= 1 then
+        return ""
+    end
+    return "valid"
 end
 
 function Watchdog:SaveHashes()
     self.Hashes = {}
     for _, v in pairs(game:GetDescendants()) do
-        if v:IsA("ModuleScript") or v:IsA("LocalScript") or (v:IsA("Script") and #getscriptbytecode(v) > 1) then
+        if v:IsA("ModuleScript") or v:IsA("LocalScript") or (v:IsA("Script") and #self:CheckValidBytecode(v) > 1) then
             if not self:Sanitize(v) then continue end
-            self.Hashes[tostring(v:GetFullName())] = getscripthash(v)
+            local normalized = self:NormalizePath(v:GetFullName())
+            self.Hashes[normalized] = getscripthash(v)
         end
     end
-    writefile("Watchdog_Saves/"..game.PlaceId.."_Hash_[" .. os.date("%d_%m_%Y(%H_%M_%S)") .. "].txt", "return " .. self.Beautifier(self.Hashes, {
-        Prettify = true,
-        FunctionsReturnRaw = true
-    }))
+    writefile(
+        "Watchdog_Saves/" .. game.PlaceId .. "_Hash_[" .. os.date("%d_%m_%Y(%H_%M_%S)") .. "].txt",
+        "return " .. self.Beautifier(self.Hashes, { Prettify = true, FunctionsReturnRaw = true })
+    )
 end
 
 function Watchdog:CheckChanges(file)
@@ -70,23 +114,31 @@ function Watchdog:CheckChanges(file)
         warn("No hash file found. Run SaveHashes first.")
         return
     end
-    local oldData = loadstring(readfile(file))()
+
+    
+    local rawOldData = loadstring(readfile(file))()
+    local oldData = {}
+    for path, hash in pairs(rawOldData) do
+        oldData[self:DenormalizePath(path)] = hash
+    end
+
     local newData = {}
     for _, v in pairs(game:GetDescendants()) do
-        if v:IsA("ModuleScript") or v:IsA("LocalScript") or (v:IsA("Script") and #getscriptbytecode(v) > 1) then
+        if v:IsA("ModuleScript") or v:IsA("LocalScript") or (v:IsA("Script") and #self:CheckValidBytecode(v) > 1) then
             if not self:Sanitize(v) then continue end
-            newData[tostring(v:GetFullName())] = getscripthash(v)
+            local key = self:DenormalizePath(self:NormalizePath(v:GetFullName()))
+            newData[key] = getscripthash(v)
         end
     end
+
     return oldData, newData
 end
 
-local Players    = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
-local UserInputService = game:GetService("UserInputService")
-local LocalPlayer = Players.LocalPlayer
-local PlayerGui   = game:WaitForChild("CoreGui")
 
+local Players          = game:GetService("Players")
+local TweenService     = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local PlayerGui        = game:WaitForChild("CoreGui")
 
 local C = {
     BG       = Color3.fromHex("#0d0f14"),
@@ -118,13 +170,11 @@ local function stroke(color, thickness, parent)
     return make("UIStroke", { Color = color, Thickness = thickness, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, parent)
 end
 
-
 local ScreenGui = make("ScreenGui", {
     Name = "WatchdogUI",
     ResetOnSpawn = false,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, PlayerGui)
-
 
 local Main = make("Frame", {
     Name = "Main",
@@ -135,7 +185,6 @@ local Main = make("Frame", {
 }, ScreenGui)
 corner(10, Main)
 stroke(C.Border, 1.5, Main)
-
 
 local Shadow = make("Frame", {
     Name = "Shadow",
@@ -148,7 +197,6 @@ local Shadow = make("Frame", {
 }, Main)
 corner(14, Shadow)
 
-
 local TitleBar = make("Frame", {
     Name = "TitleBar",
     Size = UDim2.new(1, 0, 0, 42),
@@ -157,7 +205,6 @@ local TitleBar = make("Frame", {
 }, Main)
 corner(10, TitleBar)
 
-
 make("Frame", {
     Size = UDim2.new(1, 0, 0, 10),
     Position = UDim2.new(0, 0, 1, -10),
@@ -165,16 +212,15 @@ make("Frame", {
     BorderSizePixel = 0,
 }, TitleBar)
 
-
 make("Frame", {
     Size = UDim2.new(0, 3, 0, 22),
     Position = UDim2.new(0, 12, 0.5, -11),
     BackgroundColor3 = C.Accent,
     BorderSizePixel = 0,
 }, TitleBar)
-corner(2, TitleBar:FindFirstChild("Frame"))   
+corner(2, TitleBar:FindFirstChild("Frame"))
 
-local TitleLabel = make("TextLabel", {
+make("TextLabel", {
     Size = UDim2.new(1, -80, 1, 0),
     Position = UDim2.new(0, 22, 0, 0),
     BackgroundTransparency = 1,
@@ -185,7 +231,7 @@ local TitleLabel = make("TextLabel", {
     TextXAlignment = Enum.TextXAlignment.Left,
 }, TitleBar)
 
-local VersionLabel = make("TextLabel", {
+make("TextLabel", {
     Size = UDim2.new(0, 60, 1, 0),
     Position = UDim2.new(1, -70, 0, 0),
     BackgroundTransparency = 1,
@@ -195,7 +241,6 @@ local VersionLabel = make("TextLabel", {
     TextColor3 = C.Subtext,
     TextXAlignment = Enum.TextXAlignment.Right,
 }, TitleBar)
-
 
 local CloseBtn = make("TextButton", {
     Size = UDim2.new(0, 28, 0, 28),
@@ -208,11 +253,7 @@ local CloseBtn = make("TextButton", {
     BorderSizePixel = 0,
 }, TitleBar)
 corner(6, CloseBtn)
-
-CloseBtn.MouseButton1Click:Connect(function()
-    ScreenGui:Destroy()
-end)
-
+CloseBtn.MouseButton1Click:Connect(function() ScreenGui:Destroy() end)
 
 local Body = make("Frame", {
     Name = "Body",
@@ -221,9 +262,8 @@ local Body = make("Frame", {
     BackgroundTransparency = 1,
 }, Main)
 
-
 local function sectionLabel(text, yOffset, parent)
-    local lbl = make("TextLabel", {
+    return make("TextLabel", {
         Size = UDim2.new(1, 0, 0, 16),
         Position = UDim2.new(0, 0, 0, yOffset),
         BackgroundTransparency = 1,
@@ -233,9 +273,7 @@ local function sectionLabel(text, yOffset, parent)
         TextColor3 = C.Subtext,
         TextXAlignment = Enum.TextXAlignment.Left,
     }, parent)
-    return lbl
 end
-
 
 sectionLabel("SNAPSHOT", 0, Body)
 
@@ -271,7 +309,6 @@ local SaveStatus = make("TextLabel", {
     TextColor3 = C.Add,
     TextXAlignment = Enum.TextXAlignment.Right,
 }, SaveBtn)
-
 
 sectionLabel("SELECT HASH FILE", 72, Body)
 
@@ -310,11 +347,10 @@ local RefreshBtn = make("TextButton", {
 }, FileRow)
 corner(6, RefreshBtn)
 
-
 local DropList = make("Frame", {
     Name = "DropList",
     Size = UDim2.new(1, 0, 0, 0),
-    Position = UDim2.new(0, 0, 0, 134),  
+    Position = UDim2.new(0, 0, 0, 134),
     BackgroundColor3 = C.Panel,
     BorderSizePixel = 0,
     ClipsDescendants = true,
@@ -355,7 +391,7 @@ local function populateDropdown()
     end
     local files = listfiles("Watchdog_Saves")
     if #files == 0 then
-        local none = make("TextLabel", {
+        make("TextLabel", {
             Size = UDim2.new(1, 0, 0, 32),
             BackgroundTransparency = 1,
             Text = "No saved files found",
@@ -417,17 +453,14 @@ end)
 
 RefreshBtn.MouseButton1Click:Connect(function()
     populateDropdown()
-    if not dropOpen then
-        dropOpen = true
-        DropList.Visible = true
-        local itemCount = math.min(#listfiles("Watchdog_Saves"), 4)
-        local targetH = math.max(itemCount, 1) * 34 + 4
-        TweenService:Create(DropList, TweenInfo.new(0.18, Enum.EasingStyle.Quart), {
-            Size = UDim2.new(1, 0, 0, targetH)
-        }):Play()
-    end
+    dropOpen = true
+    DropList.Visible = true
+    local itemCount = math.min(#listfiles("Watchdog_Saves"), 4)
+    local targetH = math.max(itemCount, 1) * 34 + 4
+    TweenService:Create(DropList, TweenInfo.new(0.18, Enum.EasingStyle.Quart), {
+        Size = UDim2.new(1, 0, 0, targetH)
+    }):Play()
 end)
-
 
 local CheckBtn = make("TextButton", {
     Size = UDim2.new(1, 0, 0, 38),
@@ -451,9 +484,7 @@ make("TextLabel", {
     TextXAlignment = Enum.TextXAlignment.Left,
 }, CheckBtn)
 
-
 sectionLabel("RESULTS", 196, Body)
-
 
 local StatsRow = make("Frame", {
     Size = UDim2.new(1, 0, 0, 28),
@@ -485,7 +516,6 @@ local AddCount    = statBadge(C.Add,    "  ＋ Added",   0)
 local RemoveCount = statBadge(C.Remove, "  － Removed", 126)
 local ChangeCount = statBadge(C.Change, "  ！ Changed", 252)
 
-
 local ResultScroll = make("ScrollingFrame", {
     Size = UDim2.new(1, 0, 0, 220),
     Position = UDim2.new(0, 0, 0, 248),
@@ -499,7 +529,7 @@ local ResultScroll = make("ScrollingFrame", {
 corner(8, ResultScroll)
 stroke(C.Border, 1, ResultScroll)
 
-local ResultLayout = make("UIListLayout", {
+make("UIListLayout", {
     SortOrder = Enum.SortOrder.LayoutOrder,
     Padding = UDim.new(0, 2),
 }, ResultScroll)
@@ -509,7 +539,6 @@ make("UIPadding", {
     PaddingRight = UDim.new(0, 6),
     PaddingBottom = UDim.new(0, 6),
 }, ResultScroll)
-
 
 local EmptyLabel = make("TextLabel", {
     Size = UDim2.new(1, 0, 0, 30),
@@ -531,15 +560,42 @@ local function clearResults()
     ResultScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 end
 
-local function addResult(symbol, color, path, order)
+local function clipToast(row, color)
+    local toast = make("TextLabel", {
+        Size = UDim2.new(0, 64, 0, 20),
+        Position = UDim2.new(1, -70, 0.5, -10),
+        BackgroundColor3 = color:Lerp(Color3.fromHex("#000000"), 0.5),
+        BackgroundTransparency = 0.3,
+        Text = "Copied!",
+        Font = Enum.Font.GothamBold,
+        TextSize = 10,
+        TextColor3 = color,
+        BorderSizePixel = 0,
+        ZIndex = row.ZIndex + 2,
+    }, row)
+    corner(4, toast)
+    task.delay(1, function()
+        TweenService:Create(toast, TweenInfo.new(0.3), {
+            BackgroundTransparency = 1,
+            TextTransparency = 1,
+        }):Play()
+        task.delay(0.35, function() toast:Destroy() end)
+    end)
+end
+
+local SORT_GROUP = { add = 1, change = 2, remove = 3 }
+
+local function addResult(kind, color, path, groupIndex)
     local row = make("Frame", {
         Size = UDim2.new(1, 0, 0, 30),
         BackgroundColor3 = color:Lerp(C.Panel, 0.88),
         BorderSizePixel = 0,
-        LayoutOrder = order,
+        LayoutOrder = SORT_GROUP[kind] * 100000 + groupIndex,
     }, ResultScroll)
     corner(5, row)
     stroke(color:Lerp(C.Panel, 0.5), 1, row)
+
+    local symbol = kind == "add" and "[+]" or kind == "change" and "[!]" or "[-]"
 
     make("TextLabel", {
         Size = UDim2.new(0, 22, 1, 0),
@@ -562,6 +618,19 @@ local function addResult(symbol, color, path, order)
         TextXAlignment = Enum.TextXAlignment.Left,
         TextTruncate = Enum.TextTruncate.AtEnd,
     }, row)
+
+    local clickArea = make("TextButton", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        Text = "",
+        BorderSizePixel = 0,
+        ZIndex = row.ZIndex + 1,
+    }, row)
+    clickArea.MouseButton1Click:Connect(function()
+        setclipboard(path)
+        clipToast(row, color)
+    end)
+
     return row
 end
 
@@ -579,9 +648,7 @@ SaveBtn.MouseButton1Click:Connect(function()
         Watchdog:SaveHashes()
         SaveStatus.Text = "✅ Saved"
         SaveStatus.TextColor3 = C.Add
-        task.delay(2.5, function()
-            SaveStatus.Text = ""
-        end)
+        task.delay(2.5, function() SaveStatus.Text = "" end)
     end)
 end)
 
@@ -594,7 +661,6 @@ end)
 
 CheckBtn.MouseButton1Click:Connect(function()
     if not selectedFile then
-        
         local s = stroke(C.Remove, 1.5, FileRow)
         task.delay(1.2, function() s:Destroy(); stroke(C.Border, 1, FileRow) end)
         return
@@ -627,30 +693,30 @@ CheckBtn.MouseButton1Click:Connect(function()
             ResultScroll.CanvasSize = UDim2.new(0, 0, 0, 42)
             return
         end
-        local added, removed, changed = 0, 0, 0
-        local order = 0
-        local totalH = 0
+
+        local buckets = { add = {}, change = {}, remove = {} }
 
         for path, hash in pairs(newData) do
-            order += 1
             if not oldData[path] then
-                added += 1
-                addResult("[+]", C.Add, path, order)
-                totalH += 32
+                table.insert(buckets.add, path)
             elseif oldData[path] ~= hash then
-                changed += 1
-                addResult("[!]", C.Change, path, order)
-                totalH += 32
+                table.insert(buckets.change, path)
             end
         end
         for path in pairs(oldData) do
             if not newData[path] then
-                removed += 1
-                order += 1
-                addResult("[-]", C.Remove, path, order)
-                totalH += 32
+                table.insert(buckets.remove, path)
             end
         end
+
+        table.sort(buckets.add)
+        table.sort(buckets.change)
+        table.sort(buckets.remove)
+
+        local totalH = 0
+        for i, path in ipairs(buckets.add)    do addResult("add",    C.Add,    path, i) totalH += 32 end
+        for i, path in ipairs(buckets.change) do addResult("change", C.Change, path, i) totalH += 32 end
+        for i, path in ipairs(buckets.remove) do addResult("remove", C.Remove, path, i) totalH += 32 end
 
         if totalH == 0 then
             EmptyLabel.Visible = true
@@ -659,9 +725,9 @@ CheckBtn.MouseButton1Click:Connect(function()
         end
 
         ResultScroll.CanvasSize = UDim2.new(0, 0, 0, totalH + 12)
-        AddCount.Text    = "  ＋ Added: "    .. added
-        RemoveCount.Text = "  － Removed: "  .. removed
-        ChangeCount.Text = "  ！ Changed: "  .. changed
+        AddCount.Text    = "  ＋ Added: "   .. #buckets.add
+        RemoveCount.Text = "  － Removed: " .. #buckets.remove
+        ChangeCount.Text = "  ！ Changed: " .. #buckets.change
     end)
 end)
 
@@ -683,10 +749,8 @@ do
         or input.UserInputType == Enum.UserInputType.Touch) then
             local delta = input.Position - dragStart
             Main.Position = UDim2.new(
-                startPos.X.Scale,
-                startPos.X.Offset + delta.X,
-                startPos.Y.Scale,
-                startPos.Y.Offset + delta.Y
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
             )
         end
     end)
